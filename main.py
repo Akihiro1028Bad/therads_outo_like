@@ -196,7 +196,7 @@ def get_post_hrefs(html_content):
             post_hrefs.append(href)
     return post_hrefs
 
-def click_all_like_buttons(driver, post_url, max_scroll_attempts=5, scroll_pause_time=2):
+def click_all_like_buttons(driver, post_url, total_likes, login_username, max_scroll_attempts=5, scroll_pause_time=2):
     """
     指定された投稿ページ内のすべての「いいね！」ボタンをクリックする関数。
     
@@ -236,6 +236,7 @@ def click_all_like_buttons(driver, post_url, max_scroll_attempts=5, scroll_pause
         logging.info("投稿ページが正常に読み込まれました")
 
         click_count = 0
+        new_total_likes = total_likes
 
         for scroll_attempt in range(max_scroll_attempts):
             logging.info(f"スクロール試行 {scroll_attempt + 1}/{max_scroll_attempts}")
@@ -262,23 +263,33 @@ def click_all_like_buttons(driver, post_url, max_scroll_attempts=5, scroll_pause
                                 logging.info(f"「いいね！」ボタンをクリックしました。合計: {click_count}")
                                 time.sleep(0.5)  # クリック後の短い待機
 
-                            #if count % check_interval == 0:
-                                #logging.info(f"★制限チェックします★")
-                                #time.sleep(1)
+                                count = count + 1
+                                new_total_likes = new_total_likes + 1
 
-                                #svg = button.find_element(By.CSS_SELECTOR, "svg[aria-label='「いいね！」を取り消す']")
-                                #fill_value = svg.find_element(By.TAG_NAME, "path").get_attribute("fill")
+                            # 10回ごとに制限チェック
+                            if new_total_likes % 10 == 0:
+                                logging.info("★ 10いいねしたので制限チェックします") 
+                                time.sleep(2)
+                                
+                                # SVG要素を探してフィル状態を確認
+                                try:
+                                    svg = button.find_element(By.CSS_SELECTOR, "svg[aria-label='「いいね！」']")
+                                    
+                                    if svg:
+                                        logging.info("=" * 50)
+                                        logging.info(f"制限を感知しました")
+                                        logging.info(f"ユーザー名: {login_username}")
+                                        logging.info(f"合計いいね数: {new_total_likes}")
+                                        logging.info("制限が感知されたため、処理を中止します。")
+                                        logging.info("=" * 50)
+                                        return -1  # 制限を示す特別な値を返す
 
-                                #if fill_value == "transparent" or not fill_value:
-                                    #logging.info(f"★★★★★★★★★★★★★★")
-                                    #logging.info(f"★★制限を感知しまいした★★")
-                                    #logging.info(f"★★★★★★★★★★★★★★★")
-                                #else:
-                                    #logging.info(f"★★制限を感知しませんでした★★")
+                                except NoSuchElementException:
+                                    logging.info("★　制限は感知されませんでした。処理を続行します。")
 
-                            count = count + 1
                         else:
                             logging.debug("既にいいね済みのボタンをスキップしました")
+
                     except StaleElementReferenceException:
                         #logging.warning("要素が古くなっています。スキップして次に進みます。")
                         continue
@@ -310,7 +321,7 @@ def click_all_like_buttons(driver, post_url, max_scroll_attempts=5, scroll_pause
         logging.error(f"予期せぬエラーが発生しました: {str(e)}")
         return 0
 
-def auto_like_comments_on_posts(driver, post_urls, delay=2):
+def auto_like_comments_on_posts(driver, post_urls, login_username, delay=2):
     """
     複数の投稿のコメントに自動でいいねをする関数
 
@@ -325,7 +336,11 @@ def auto_like_comments_on_posts(driver, post_urls, delay=2):
     for index, url in enumerate(post_urls, start=1):
         logging.info(f"処理中: {index}/{total_posts} - {url}")
         
-        likes = click_all_like_buttons(driver, url)
+        likes = click_all_like_buttons(driver, url, total_likes, login_username)
+        
+        if likes == -1:  # 制限が検知された場合
+            return -1  # メイン関数に制限を通知
+
         total_likes += likes
         
         logging.info(f"投稿 {url} で {likes} 件のコメントにいいねしました。")
@@ -355,7 +370,13 @@ def main():
     try:
         if login_to_threads(driver, login_username, login_password):
             post_urls = get_recommended_posts(driver, num_likes)
-            auto_like_comments_on_posts(driver, post_urls)
+            result = auto_like_comments_on_posts(driver, post_urls, login_username)
+
+            if result == -1:
+                logging.warning("制限が検知されたため、処理を終了します。")
+            else:
+                logging.info(f"処理が正常に完了しました。合計 {result} 件のいいねを行いました。")
+
         else:
             logging.error("ログインに失敗したため、自動「いいね」を実行できません。")
     except Exception as e:
@@ -363,6 +384,8 @@ def main():
     finally:
         driver.quit()
         logging.info("ブラウザを終了しました。プログラムを終了します。")
+
+    input("Enterキーを押して終了してください...")  # コマンドプロンプトを開いたままにする
 
 if __name__ == "__main__":
     main()
