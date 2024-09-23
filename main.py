@@ -14,6 +14,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 from bs4 import BeautifulSoup
 import time
 from cookie_manager import save_cookies, load_cookies, delete_cookies
+import random
 
 # ログの設定：日時、ログレベル、メッセージを表示
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -298,7 +299,11 @@ def click_all_like_buttons(driver, post_url, total_likes, login_username, max_sc
                             if safe_click(button):
                                 click_count += 1
                                 logging.info(f"アカウント {login_username}:「いいね！」ボタンをクリックしました。合計: {click_count}")
-                                time.sleep(0.5)  # クリック後の短い待機
+                                
+                                # ランダムな待機時間を設定（1秒から10秒の間）
+                                random_wait = random.uniform(1, 10)
+                                logging.info(f"アカウント {login_username}: {random_wait:.2f}秒待機します。")
+                                time.sleep(random_wait)
 
                                 count = count + 1
                                 new_total_likes = new_total_likes + 1
