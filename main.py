@@ -13,6 +13,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 from bs4 import BeautifulSoup
 import time
+from cookie_manager import save_cookies, load_cookies, delete_cookies
 
 # ログの設定：日時、ログレベル、メッセージを表示
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,6 +50,21 @@ def login_to_threads(driver, username, password):
     try:
         driver.get(url)
         logging.info(f"ログインページにアクセスしています: {url}")
+
+        logging.info(f"引数ユーザ名情報: {username}")
+        logging.info(f"引数パスワード情報: {password}")
+
+        # 保存されたクッキーをロード
+        if load_cookies(driver, username):
+            driver.get(url)
+            # クッキーでのログインが成功したかチェック
+            if check_login_status(driver):
+                logging.info(f"ユーザー {username} はクッキーを使用して正常にログインしました。")
+                return True
+            else:
+                logging.info(f"ユーザー {username} のクッキーが無効です。通常のログインを試みます。")
+                delete_cookies(username)
+                driver.delete_all_cookies()
         
         # ユーザー名入力フィールドを待機し、入力
         username_field = WebDriverWait(driver, 10).until(
@@ -86,46 +102,57 @@ def login_to_threads(driver, username, password):
         time.sleep(5)
         
         # ログイン成功後、クッキーを保存
-        save_cookies(driver, "threads_cookies.pkl")
-        logging.info("ログインセッションのクッキーを保存しました")
+        save_cookies(driver, username)
+        logging.info(f"ユーザー {username} のログインセッションのクッキーを保存しました")
         
         return True
     except Exception as e:
         logging.error(f"ログイン処理中にエラーが発生しました: {e}")
         return False
 
-def save_cookies(driver, file_path):
+# ログイン状態をチェックする関数
+def check_login_status(driver, timeout=10):
     """
-    現在のセッションのクッキーを保存する関数
-    
-    引数:
-    - driver: WebDriverオブジェクト
-    - file_path: クッキーを保存するファイルのパス
-    """
-    with open(file_path, "wb") as file:
-        pickle.dump(driver.get_cookies(), file)
-    logging.info(f"クッキーを {file_path} に保存しました")
+    'Post'または'投稿'要素の存在に基づいてログイン状態を確認する
 
-def load_cookies(driver, file_path):
+    :param driver: WebDriverオブジェクト
+    :param timeout: 要素を待機する最大時間（秒）
+    :return: ログインしている場合はTrue、そうでない場合はFalse
     """
-    保存されたクッキーを読み込む関数
-    
-    引数:
-    - driver: WebDriverオブジェクト
-    - file_path: 保存されたクッキーファイルのパス
-    """
-    with open(file_path, "rb") as file:
-        cookies = pickle.load(file)
-        for cookie in cookies:
-            driver.add_cookie(cookie)
-    logging.info(f"{file_path} からクッキーを読み込み、ブラウザに適用しました")
+    logging.info("ログイン状態のチェックを開始します。")
+    try:
+        # 'Post'または'投稿'要素を探す
+        element = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.XPATH, 
+                "//div[contains(@class, 'xc26acl') and contains(@class, 'x6s0dn4') and contains(@class, 'x78zum5') and (contains(text(), 'Post') or contains(text(), '投稿'))]"
+            ))
+        )
+        logging.info(f"'Post'または'投稿'要素が見つかりました。テキスト: '{element.text}'")
+        logging.info("ログイン状態が確認されました。")
+        return True
+    except TimeoutException:
+        logging.warning(f"'Post'または'投稿'要素が {timeout} 秒以内に見つかりませんでした。")
+        logging.info("ログアウト状態であると判断します。")
+        return False
+    except NoSuchElementException:
+        logging.warning("'Post'または'投稿'要素が存在しません。")
+        logging.info("ログアウト状態であると判断します。")
+        return False
+    except Exception as e:
+        logging.error(f"ログイン状態の確認中に予期せぬエラーが発生しました: {str(e)}")
+        logging.info("ログアウト状態であると判断します。")
+        return False
 
-def get_recommended_posts(driver, num_posts=10):
+    logging.info("ログアウト状態であると判断します。")
+    return False
+
+def get_recommended_posts(driver, username, num_posts=10):
     """
     おすすめ投稿を取得する関数
     
     引数:
     - driver: WebDriverオブジェクト
+    - username: ユーザー名（クッキーの読み込みに使用）
     - num_posts: 取得する投稿の数（デフォルト: 10）
     
     戻り値:
@@ -137,10 +164,16 @@ def get_recommended_posts(driver, num_posts=10):
     reload_counter = 0
 
     while len(post_hrefs) < num_posts:
+
+        if reload_counter == 0:
+            driver.get(url)
+            if load_cookies(driver, username):
+                logging.info(f"ユーザー {username} のクッキーを正常にロードしました。")
+            else:
+                logging.warning(f"ユーザー {username} のクッキーのロードに失敗しました。既存のセッションを使用します。")
+
         # 10投稿ごと、または初回にページをロード/リロード
         if reload_counter % 10 == 0:
-            driver.get(url)
-            load_cookies(driver, "threads_cookies.pkl")
             driver.refresh()
             logging.info(f"ページをロード/リロードしました。現在の投稿数: {len(post_hrefs)}")
             time.sleep(5)
@@ -227,19 +260,23 @@ def click_all_like_buttons(driver, post_url, total_likes, login_username, max_sc
 
     try:
         driver.get(new_post_url)
-        logging.info(f"投稿ページにアクセスしています: {new_post_url}")
+        logging.info(f"アカウント {login_username}:投稿ページにアクセスしています: {new_post_url}")
 
-        # ページの読み込みを待機
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        logging.info("投稿ページが正常に読み込まれました")
+        # ページの読み込みを待機（タイムアウト処理付き）
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            logging.info(f"アカウント {login_username}:投稿ページが正常に読み込まれました")
+        except TimeoutException:
+            logging.warning(f"アカウント {login_username}:投稿ページの読み込みがタイムアウトしました。次の投稿にスキップします。")
+            return 0  # 0を返してこの投稿をスキップ
 
         click_count = 0
         new_total_likes = total_likes
 
         for scroll_attempt in range(max_scroll_attempts):
-            logging.info(f"スクロール試行 {scroll_attempt + 1}/{max_scroll_attempts}")
+            logging.info(f"アカウント {login_username}:スクロール試行 {scroll_attempt + 1}/{max_scroll_attempts}")
             
             # 更新されたセレクタを使用して「いいね！」ボタンを探す
             like_buttons = driver.find_elements(By.CSS_SELECTOR, "div[role='button'][tabindex='0'] div.x6s0dn4")
@@ -249,7 +286,7 @@ def click_all_like_buttons(driver, post_url, total_likes, login_username, max_sc
             check_interval = 10
             
             if not like_buttons:
-                logging.info("「いいね！」ボタンが見つかりません。スクロールを続行します。")
+                logging.info(f"「アカウント {login_username}:いいね！」ボタンが見つかりません。スクロールを続行します。")
             else:
                 for button in like_buttons:
                     try:
@@ -260,7 +297,7 @@ def click_all_like_buttons(driver, post_url, total_likes, login_username, max_sc
                         if fill_value == "transparent" or not fill_value:
                             if safe_click(button):
                                 click_count += 1
-                                logging.info(f"「いいね！」ボタンをクリックしました。合計: {click_count}")
+                                logging.info(f"アカウント {login_username}:「いいね！」ボタンをクリックしました。合計: {click_count}")
                                 time.sleep(0.5)  # クリック後の短い待機
 
                                 count = count + 1
@@ -268,7 +305,7 @@ def click_all_like_buttons(driver, post_url, total_likes, login_username, max_sc
 
                             # 10回ごとに制限チェック
                             if new_total_likes % 10 == 0:
-                                logging.info("★ 10いいねしたので制限チェックします") 
+                                logging.info(f"アカウント:{login_username}:10いいねしたので制限チェックします") 
                                 time.sleep(2)
                                 
                                 # SVG要素を探してフィル状態を確認
@@ -277,18 +314,18 @@ def click_all_like_buttons(driver, post_url, total_likes, login_username, max_sc
                                     
                                     if svg:
                                         logging.info("=" * 50)
-                                        logging.info(f"制限を感知しました")
-                                        logging.info(f"ユーザー名: {login_username}")
-                                        logging.info(f"合計いいね数: {new_total_likes}")
-                                        logging.info("制限が感知されたため、処理を中止します。")
+                                        logging.info(f"アカウント:{login_username}:制限を感知しました")
+                                        logging.info(f"ユーザー名:{login_username}")
+                                        logging.info(f"アカウント:{login_username}:合計いいね数: {new_total_likes}")
+                                        logging.info(f"アカウント:{login_username}:制限が感知されたため、処理を中止します。")
                                         logging.info("=" * 50)
                                         return -1  # 制限を示す特別な値を返す
 
                                 except NoSuchElementException:
-                                    logging.info("★　制限は感知されませんでした。処理を続行します。")
+                                    logging.info(f"アカウント:{login_username}:制限は感知されませんでした。処理を続行します。")
 
                         else:
-                            logging.debug("既にいいね済みのボタンをスキップしました")
+                            logging.info(f"アカウント:{login_username}:既にいいね済みのボタンをスキップしました")
 
                     except StaleElementReferenceException:
                         #logging.warning("要素が古くなっています。スキップして次に進みます。")
@@ -309,9 +346,9 @@ def click_all_like_buttons(driver, post_url, total_likes, login_username, max_sc
                 logging.info("これ以上スクロールできません。処理を終了します。")
                 break
         
-        logging.info(f"---------------------------------------------------------")
-        logging.info(f"合計 {click_count} 件の「いいね！」ボタンをクリックしました。")
-        logging.info(f"---------------------------------------------------------")
+        logging.info("=" * 50)
+        logging.info(f"アカウント {login_username}:合計 {click_count} 件の「いいね！」ボタンをクリックしました。")
+        logging.info("=" * 50)
         return click_count
 
     except TimeoutException:
@@ -334,32 +371,33 @@ def auto_like_comments_on_posts(driver, post_urls, login_username, delay=2):
     total_posts = len(post_urls)
 
     for index, url in enumerate(post_urls, start=1):
-        logging.info(f"処理中: {index}/{total_posts} - {url}")
+        logging.info(f"アカウント {login_username}:処理中: {index}/{total_posts} - {url}")
         
         likes = click_all_like_buttons(driver, url, total_likes, login_username)
         
         if likes == -1:  # 制限が検知された場合
-            return -1  # メイン関数に制限を通知
+            return False, total_likes  # メイン関数に制限を通知
 
         total_likes += likes
         
-        logging.info(f"投稿 {url} で {likes} 件のコメントにいいねしました。")
+        logging.info(f"アカウント {login_username}:投稿 {url} で {likes} 件のコメントにいいねしました。")
         
         # レート制限を回避するための待機
         time.sleep(delay)
         
         # 進捗報告
-        logging.info(f"---------------------------------------------------------")
-        logging.info(f"進捗: 合計 {total_likes} 件のコメントにいいねしました（{index}/{total_posts} 投稿処理済み）")
-        logging.info(f"---------------------------------------------------------")
+        logging.info("=" * 50)
+        logging.info(f"アカウント {login_username}:進捗: 合計 {total_likes} 件のコメントにいいねしました（{index}/{total_posts} 投稿処理済み）")
+        logging.info("=" * 50)
 
-    logging.info(f"すべての投稿の処理が完了しました。合計 {total_likes} 件のコメントにいいねしました。")
-    return total_likes
+    logging.info(f"アカウント {login_username}:すべての投稿の処理が完了しました。合計 {total_likes} 件のコメントにいいねしました。")
+    return True, total_likes
 
-def main():
+# main.py の末尾に以下のコードを追加
+
+def run_single_account():
     """
-    メイン実行関数
-    ユーザー入力を受け取り、ログインと自動「いいね」処理を実行
+    単一アカウントでの実行（既存の動作）
     """
     login_username = input("Threadsのログインユーザー名を入力してください: ").strip()
     login_password = input("Threadsのパスワードを入力してください: ").strip()
@@ -385,7 +423,21 @@ def main():
         driver.quit()
         logging.info("ブラウザを終了しました。プログラムを終了します。")
 
-    input("Enterキーを押して終了してください...")  # コマンドプロンプトを開いたままにする
-
 if __name__ == "__main__":
-    main()
+    import sys
+    #if len(sys.argv) > 1 and sys.argv[1] == "--multi":
+        
+    #else:
+        # 単一アカウントモード（既存の動作）
+        #run_single_account()
+
+    # 複数アカウントモード
+    from account_manager import load_accounts, run_accounts_in_batches
+    accounts = load_accounts("accounts.json")
+    if accounts:
+        # バッチサイズを5に設定してアカウントを処理
+        run_accounts_in_batches(accounts, batch_size=1)
+    else:
+        logging.error("アカウント情報の読み込みに失敗しました。処理を終了します。")
+
+    input("Enterキーを押して終了してください...")  # コマンドプロンプトを開いたままにする
